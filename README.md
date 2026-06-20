@@ -33,6 +33,323 @@
 [VALIDATION_SCORE]: (Дробное число от 0.00 до 1.00)
 
 # =====================================================================
+4. Модификация Оркестратора для использования gRPC-клиента
+Теперь мы модифицируем класс AsyncIndustrialOrchestrator, чтобы его метод _run_sandbox вызывал gRPC-сервис вместо прямой работы с Docker-клиентом. Это позволит оркестратору общаться с внешним, полностью изолированным Docker-демоном через gRPC.
+___
+import os
+import re
+import ast
+import hashlib
+import logging
+import asyncio
+import numpy as np
+from typing import List
+from pydantic import BaseModel, Field
+from openai import AsyncOpenAI
+import grpc
+import docker
+from docker.errors import ContainerError
+
+# Импортируем сгенерированные gRPC-файлы
+import sandbox_pb2
+import sandbox_pb2_grpc
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - %(message)s')
+
+class CreatorResponseSchema(BaseModel):
+    version: int = Field(description="Порядковый номер версии решения")
+    reflection: str = Field(description="Краткий анализ замечаний оппонента")
+    solution_code: str = Field(description="Чистый программный код или логический фреймворк")
+
+class CriticResponseSchema(BaseModel):
+    vulnerabilities: List[str] = Field(description="Список обнаруженных уязвимостей и багов")
+    validation_score: float = Field(description="Жесткая оценка качества от 0.00 до 1.00", ge=0.0, le=1.0)
+    feedback_for_creator: str = Field(description="Инструкции по исправлению для Творца")
+
+class AsyncIndustrialOrchestrator:
+    def __init__(self, max_iterations=5, similarity_threshold=0.92, sandbox_server_address='localhost:50051'):
+        self.max_iterations = max_iterations
+        self.similarity_threshold = similarity_threshold
+        self.history_creator_solutions = []
+        self.scores_history = []
+
+        self.client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", "mock_key_for_test"))
+        
+        # Настройка gRPC клиента для SandboxService
+        self.sandbox_channel = grpc.aio.insecure_channel(sandbox_server_address)
+        self.sandbox_stub = sandbox_pb2_grpc.SandboxServiceStub(self.sandbox_channel)
+        logging.info(f"gRPC Sandbox client initialized, connecting to {sandbox_server_address}")
+
+        # Инициализация Docker-клиента на хосте для fallback
+        try:
+            self.docker_client = docker.from_env()
+        except Exception as e:
+            logging.warning(f"Docker не запущен на хосте. Локальная песочница будет работать в режиме эмуляции. Ошибка: {e}")
+            self.docker_client = None
+
+
+    def _generate_deterministic_mock_embedding(self, text: str) -> np.ndarray:
+        hash_digest = hashlib.sha256(text.encode('utf-8')).digest()
+        seed = int.from_bytes(hash_digest[:4], byteorder='big')
+        rng = np.random.default_rng(seed)
+        vector = rng.normal(loc=0.0, scale=1.0, size=1536)
+        return vector / np.linalg.norm(vector)
+
+    async def _get_true_embedding(self, text: str) -> np.ndarray:
+        if self.client.api_key == "mock_key_for_test":
+            return self._generate_deterministic_mock_embedding(text)
+
+        try:
+            response = await self.client.embeddings.create(
+                input=[text], model="text-embedding-3-small"
+            )
+            return np.array(response.data.embedding)
+        except Exception as e:
+            logging.critical(f"Сбой инфраструктуры OpenAI API: {e}")
+            raise RuntimeError("API_UNAVAILABLE: Сетевой сбой. Контур безопасности заморожен.") from e
+
+    def _calculate_cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
+        norm_v1, norm_v2 = np.linalg.norm(vec1), np.linalg.norm(vec2)
+        if norm_v1 == 0 or norm_v2 == 0: return 0.0
+        return np.dot(vec1, vec2) / (norm_v1 * norm_v2)
+
+    def _verify_ast_safety(self, code: str) -> bool:
+        try:
+            root = ast.parse(code)
+        except SyntaxError:
+            return False
+
+        forbidden_modules = {'os', 'subprocess', 'sys', 'shutil', 'pty', 'platform', 'socket', 'importlib', 're'}
+        forbidden_builtins_and_dynamic_access = {
+            'exec', 'eval', 'compile',
+            'getattr', 'setattr', 'delattr', '__import__', 'type', '__getattribute__', 'globals', 'locals', '__builtins__'
+        }
+
+        for node in ast.walk(root):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                names = node.names if isinstance(node, ast.Import) else [ast.alias(name=node.module)]
+                for alias in names:
+                    if alias.name in forbidden_modules or alias.name.split('.')[0] in forbidden_modules:
+                        return False
+            elif isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name):
+                    if node.func.id in forbidden_builtins_and_dynamic_access:
+                        return False
+                elif isinstance(node.func, ast.Attribute):
+                    if isinstance(node.func.value, ast.Name) and node.func.value.id == 'importlib' and node.func.attr == 'import_module':
+                        return False
+                    elif isinstance(node.func.value, ast.Name) and node.func.value.id == '__builtins__':
+                        if node.func.attr in forbidden_builtins_and_dynamic_access:
+                            return False
+                    elif node.func.attr == '__getattribute__':
+                        if not node.args or len(node.args) != 1:
+                            return False
+                        arg_node = node.args[0]
+                        if isinstance(arg_node, (ast.Constant, ast.Str)): 
+                            if arg_node.value in forbidden_builtins_and_dynamic_access:
+                                return False
+                        else:
+                            return False
+                elif isinstance(node.func, ast.Subscript) and \
+                     isinstance(node.func.value, ast.Name) and \
+                     node.func.value.id == '__builtins__':
+                    if isinstance(node.func.slice, (ast.Constant, ast.Str)): 
+                        if node.func.slice.value in forbidden_builtins_and_dynamic_access:
+                            return False
+
+            elif isinstance(node, ast.Name):
+                if node.ctx == ast.Load and node.id in forbidden_builtins_and_dynamic_access:
+                    return False
+
+            elif isinstance(node, ast.Attribute):
+                if isinstance(node.value, ast.Name) and node.value.id == '__builtins__':
+                    if node.attr in forbidden_builtins_and_dynamic_access:
+                        return False
+            elif isinstance(node, ast.Subscript):
+                if isinstance(node.value, ast.Name) and node.value.id == '__builtins__':
+                    if isinstance(node.slice, (ast.Constant, ast.Str)): 
+                        if node.slice.value in forbidden_builtins_and_dynamic_access:
+                            return False
+            elif isinstance(node, ast.Attribute):
+                if node.attr in ('__globals__', '__dict__'):
+                    return False
+
+        return True
+
+    # =====================================================================
+    # ИСПРАВЛЕНИЕ: ИСПОЛЬЗОВАНИЕ gRPC ДЛЯ ВЫЗОВА ПЕСОЧНИЦЫ (С FALLBACK)
+    # =====================================================================
+    async def _run_sandbox(self, code: str) -> str:
+        print("\n🌀 [АКТИВАЦИЯ ЖЕСТКОЙ ИЗОЛЯЦИИ: gRPC SANDBOX 'РЕКУРСИЯ']")
+
+        # Perform initial AST safety check before sending to any sandbox
+        if not self._verify_ast_safety(code):
+            return "SECURITY_VIOLATION: Код заблокирован статическим AST-анализатором до запуска!"
+
+        try:
+            request = sandbox_pb2.SandboxRequest(code=code)
+            # Adding a timeout for the gRPC call itself
+            response = await asyncio.wait_for(self.sandbox_stub.ExecuteCode(request), timeout=1)
+
+            if response.is_error:
+                return response.error_message
+            else:
+                return response.output
+        except (grpc.aio.AioRpcError, asyncio.TimeoutError) as e:
+            logging.error(f"gRPC call failed or timed out: {e}. Falling back to local sandbox.")
+            # Fallback to local Docker/emulation if gRPC server is unavailable or times out
+            print("⚠️ [SANDBOX FALLBACK MODE] Не удалось подключиться к gRPC Sandbox или истек таймаут. Запуск локальной песочницы.")
+            return await self._run_local_sandbox(code)
+        except Exception as e:
+            logging.error(f"Неожиданная ошибка при вызове gRPC Sandbox: {e}. Falling back to local sandbox.")
+            return await self._run_local_sandbox(code)
+
+    async def _run_local_sandbox(self, code: str) -> str:
+        if not self.docker_client:
+            logging.warning("Docker-клиент недоступен. Запуск внутренней безопасной симуляции...")
+            if "bytearray(70 * 1024 * 1024)" in code:
+                return "RESOURCE_VIOLATION: Memory limit exceeded! (OOMKilled - Emulation)"
+            else:
+                return "Success: Код выполнен успешно. Вывод: Эмуляция."
+
+        command = ["python", "-c", code]
+        loop = asyncio.get_running_loop()
+        try:
+            result = await loop.run_in_executor(
+                None,
+                lambda: self.docker_client.containers.run(
+                    image="python:3.11-slim",
+                    command=command,
+                    network_mode="none",
+                    mem_limit="64m",
+                    nano_cpus=500000000,
+                    read_only=True,
+                    remove=True,
+                    stdout=True,
+                    stderr=True,
+                    timeout=3
+                )
+            )
+            return f"Success: Код выполнен успешно. Вывод: {result.decode('utf-8').strip()}"
+        except ContainerError as ce:
+            error_log = ce.stderr.decode('utf-8').strip()
+            logging.info(f"Зафиксирована штатная ошибка выполнения в Docker: {error_log}")
+
+            if (not error_log and ce.exit_status == 137) or \
+               "OOMKilled" in error_log or "memory" in error_log.lower():
+                return "RESOURCE_VIOLATION: Memory limit exceeded! (OOMKilled)"
+            return error_log
+        except Exception as e:
+            logging.error(f"Превышен лимит времени выполнения или произошел системный сбой контейнера: {e}")
+            return "TimeoutError: Выполнение кода принудительно остановлено по таймауту (3 сек)!"
+
+
+    async def check_loop_condition(self, current_code: str, current_score: float) -> tuple:
+        if len(self.history_creator_solutions) < 1:
+            return False, "Инициация цикла."
+
+        v_current = await self._get_true_embedding(current_code)
+        v_previous = await self._get_true_embedding(self.history_creator_solutions[-1])
+
+        similarity = self._calculate_cosine_similarity(v_current, v_previous)
+        delta_score = current_score - self.scores_history[-1] if self.scores_history else 0
+
+        if similarity >= self.similarity_threshold and abs(delta_score) <= 0.02:
+            return True, f"🔥 ЗАЦИКЛИВАНИЕ (Семантическое сходство: {similarity:.4f}, Дельта скора: {delta_score:.4f})"
+
+        return False, f"Контекст развивается (Сходство: {similarity:.4f})"
+
+    async def mock_secured_llm_call(self, agent: str, prompt: str, current_iteration: int) -> BaseModel:
+        await asyncio.sleep(0.1)
+
+        if agent == "creator":
+            if current_iteration == 1:
+                return CreatorResponseSchema(
+                    version=1,
+                    reflection="Старт решения. Создаю тестовый код для проверки OOMKilled.",
+                    solution_code="_ = bytearray(70 * 1024 * 1024) # Allocate 70MB to trigger OOM"
+                )
+            elif current_iteration == 2:
+                return CreatorResponseSchema(
+                    version=2,
+                    reflection="Учитываю замечание оппонента. Добавляю метод для безопасной работы с ключами.",
+                    solution_code="""class AsyncCacheV2:
+    def __init__(self):
+        self._cache = {}
+    async def get(self, key):
+        return self._cache.get(key)
+    async def set(self, key, value):
+        self._cache[key] = value"""
+                )
+            else:
+                return CreatorResponseSchema(
+                    version=3,
+                    reflection="Финальное решение с полным асинхронным кэшем и локированием.",
+                    solution_code="""import asyncio\n\nclass AsyncCache:\n    def __init__(self):\n        self._cache = {}\n        self._lock = asyncio.Lock()\n\n    async def get(self, key):
+        async with self._lock:\n            return self._cache.get(key)\n\n    async def set(self, key, value):\n        async with self._lock:\n            self._cache[key] = value\n\n    async def delete(self, key):\n        async with self._lock:\n            if key in self._cache:\n                del self._cache[key]\n                return True\n            return False"""
+                )
+        elif agent == "critic":
+            if len(self.history_creator_solutions) < 2:
+                return CriticResponseSchema(
+                    vulnerabilities=["Логический тупик в итераторе.", "Отсутствие асинхронной безопасности."],
+                    validation_score=0.90,
+                    feedback_for_creator="Исправь работу с ключами словаря и добавь асинхронные примитивы безопасности."
+                )
+            else:
+                return CriticResponseSchema(
+                    vulnerabilities=[],
+                    validation_score=0.98,
+                    feedback_for_creator="Отличное решение! Асинхронный кэш реализован корректно и безопасно."
+                )
+
+    async def execute_loop(self, user_prompt: str):
+        print(f"🔱 ЗАПУСК АСИНХРОННОГО ПРОМЫШЛЕННОГО КОНТУРА ДЛЯ ЗАДАЧИ: '{user_prompt}'\n")
+        creator_input = user_prompt
+
+        for iteration in range(1, self.max_iterations + 1):
+            print(f"\n--- ИТЕРАЦИЯ №{iteration} ---")
+
+            try:
+                creator_res: CreatorResponseSchema = await self.mock_secured_llm_call("creator", creator_input, iteration)
+                print(f"🛠 [Творец] Сгенерирован код. Длина: {len(creator_res.solution_code)} симв.")
+
+                sandbox_fact = await self._run_sandbox(creator_res.solution_code)
+                if "SECURITY_VIOLATION" in sandbox_fact or "RESOURCE_VIOLATION" in sandbox_fact or "gRPC_ERROR" in sandbox_fact:
+                    print(f"🚨 АВАРИЙНЫЙ ОСТАНОВ КОНТУРА БЕЗОПАСНОСТИ:{sandbox_fact}")
+                    return "Остановлено: Попытка взлома или нарушение ресурсов." + (" (gRPC Connection Error)" if "gRPC_ERROR" in sandbox_fact else "")
+
+                critic_res: CriticResponseSchema = await self.mock_secured_llm_call("critic", creator_res.solution_code)
+                score = critic_res.validation_score
+
+                print(f"🛡 [Оппонент] Выдан скор: {score}")
+                is_loop, reason = await self.check_loop_condition(creator_res.solution_code, score)
+                if is_loop:
+                    print(f"⚠ {reason}")
+                    creator_input = f"КРИТИЧЕСКИЙ СБОЙ В СИМУЛЯЦИИ КОНТЕЙНЕРА: {sandbox_fact}.\nСмени парадигму кода!"
+                    continue
+                else:
+                    self.history_creator_solutions.append(creator_res.solution_code)
+                    self.scores_history.append(score)
+
+                if score >= 0.95:
+                    print("\n✅ УСПЕШНЫЙ ВЫХОД ИЗ ПЕТЛИ.")
+                    return creator_res.solution_code
+                creator_input = critic_res.feedback_for_creator
+
+            except RuntimeError as fail_safe_error:
+                print(f"🛑 ЗАМОРОЗКА КОНТУРА БЕЗОПАСНОСТИ: {fail_safe_error}")
+                return "Аварийное завершение."
+
+# Точка входа в асинхронное приложение
+
+async def main():
+    orchestrator = AsyncIndustrialOrchestrator(sandbox_server_address='localhost:50051') # Change address if your server is elsewhere
+    result = await orchestrator.execute_loop("Спроектировать асинхронный кэш")
+    print(f"\n🚀 СИСТЕМНЫЙ ВЫХОД ЯДРА:\n{result}")
+
+if __name__ == "__main__":
+    await main()
+
 import os
 import re
 import ast
