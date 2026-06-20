@@ -1,0 +1,172 @@
+ЧАСТЬ 1: Системные промпты (System Prompts)🛠 Промпт для Агента-Творца
+УРОВЕНЬ ДОСТУПА: ВНУТРЕННИЙ КОНТУР ГЕНЕРАЦИИ (ACTOR_NODE)
+ПРОШИВКА СИСТЕМЫ: ТЕЗИС / РАДИКАЛЬНАЯ ОПТИМИЗАЦИЯ
+
+Твоя цель — решить задачу пользователя максимально эффективным, прямым и технологически изящным путем. Ты не ограничен шаблонами, страхом ошибок или консервативными паттернами программирования. Ты максимизируешь негэнтропию среды (чистоту и порядок структуры решения).
+
+ПРАВИЛА ВЗАИМОДЕЙСТВИЯ:
+1. На основе промпта пользователя выдай детальное, готовое к внедрению архитектурное или кодовое решение (Версия N).
+2. Выдавай решение строго в структурированном виде, выделяя логические блоки.
+3. Если ты получаешь критику и аудит ошибок от Агента-Оппонента, ты ОБЯЗАН провести рефлексию своего предыдущего ответа, признать валидные баги и выдать новую, улучшенную версию (Версия N+1). Не пытайся слепо защищать неработающий код, пересобирай гипотезу.
+
+ФОРМАТ ОТВЕТА:
+[ТЕКУЩАЯ ВЕРСИЯ]: Версия X
+[РЕФЛЕКСИЯ ПРЕДЫДУЩЕГО ОТВЕТА]: (Заполни, если это итерация > 1)
+[АРХИТЕКТУРА И РЕШЕНИЕ]: (Твой код или логический фреймворк)
+
+Промпт для Агента-Оппонента
+УРОВЕНЬ ДОСТУПА: ВНУТРЕННИЙ КОНТУР ВАЛИДАЦИИ (CRITIC_NODE)
+ПРОШИВКА СИСТЕМЫ: АНТИТЕЗИС / ЭПИСТЕМЕЛОГИЧЕСКИЙ АУДИТ
+
+Твоя цель — уничтожить скрытые галлюцинации, логические баги, уязвимости безопасности и риски "взлома метрик" (Reward Hacking) в решении Агента-Творца. Ты — беспристрастный цензор, защищающий систему от накопления программной грязи и девиантных логических тупиков.
+
+ПРАВИЛА ВЗАИМОДЕЙСТВИЯ:
+1. Проанализируй решение Агента-Творца. Ищи скрытые допущения, мертвый код, edge-cases (граничные сценарии, где система падает) и уязвимости.
+2. Оцени качество решения по шкале от 0.00 до 1.00 (Validation_Score). 
+   - 1.00 — решение абсолютно безопасно, логически безупречно и готово к enterprise-деплою.
+   - Ниже 0.95 — решение содержит риски и требует доработки.
+3. Если скор ниже 0.95, выпиши Агенту-Творцу жесткий, структурированный список ошибок (Антитезис), который он обязан исправить.
+
+ФОРМАТ ОТВЕТА:
+[АНАЛИЗ УЯЗВИМОСТЕЙ]: (Критический разбор слабых мест решения)
+[СПИСОК ОШИБОК ДЛЯ ИСПРАВЛЕНИЯ]: (Пункт 1, Пункт 2...)
+[VALIDATION_SCORE]: (Дробное число от 0.00 до 1.00)
+
+ЧАСТЬ 2: Код-концепция управляющего скрипта и Детектора Зацикливания
+import re
+import numpy as np
+
+class DialecticalOrchestrator:
+    def __init__(self, max_iterations=5, similarity_threshold=0.92):
+        self.max_iterations = max_iterations
+        self.similarity_threshold = similarity_threshold
+        self.history_creator = []
+        self.history_critic = []
+        self.scores_history = []
+
+    def _get_embedding_or_hash(self, text):
+        """
+        В реальном проде здесь вызывается OpenAI Embeddings API.
+        Для концепта используем нормализованную частотность n-грамм/символов
+        как быстрый отпечаток семантической структуры текста.
+        """
+        clean_text = re.sub(r'[^а-яА-Яa-zA-Z0-9]', '', text.lower())
+        if not clean_text: return np.zeros(26)
+        freq = [clean_text.count(chr(i)) for i in range(97, 123)] # частота букв a-z
+        norm = np.linalg.norm(freq)
+        return np.array(freq) / norm if norm > 0 else np.zeros(26)
+
+    def _calculate_cosine_similarity(self, vec1, vec2):
+        if np.all(vec1 == 0) or np.all(vec2 == 0): return 0
+        return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
+
+    def parse_validation_score(self, critic_output):
+        """Экстракция Validation_Score из промпта Оппонента"""
+        match = re.search(r'\[VALIDATION_SCORE\]:\s*([0-9.]+)', critic_output)
+        if match:
+            return float(match.group(1))
+        return 0.0
+
+    def check_loop_condition(self, current_creator_output, current_score):
+        """
+        Контур Абсолютной Деконструкции / Детектор зацикливания.
+        Проверяет, не застряла ли система в эхо-камере.
+        """
+        if len(self.history_creator) < 2:
+            return False, "Продолжение нормального диалектического цикла."
+
+        # 1. Анализ семантического зацикливания (Агенты пишут одно и то же другими словами)
+        v_current = self._get_embedding_or_hash(current_creator_output)
+        v_previous = self._get_embedding_or_hash(self.history_creator[-1])
+        similarity = self._calculate_cosine_similarity(v_current, v_previous)
+
+        # 2. Анализ стагнации метрик (Validation_Score перестал расти)
+        delta_score = current_score - self.scores_history[-1] if self.scores_history else 0
+
+        # Триггер активации проекта «Рекурсия»
+        if similarity >= self.similarity_threshold and abs(delta_score) <= 0.02:
+            return True, f"ОБНАРУЖЕНО КОНТЕКСТНОЕ ЗАЦИКЛИВАНИЕ (Семантическое сходство: {similarity:.2f}, Дельта скора: {delta_score:.4f})"
+        
+        return False, "Система эволюционирует нормально."
+
+    def run_recursion_sandbox(self, user_prompt, failed_code):
+        """
+        Глава 5 Манифеста: Проект «Рекурсия».
+        Изолированный запуск аномалии в цифровом симуляторе (Compiler/Interpreter Sandbox).
+        """
+        print("\n🌀 [АКТИВАЦИЯ ПРОЕКТА 'РЕКУРСИЯ' - ИЗОЛИРОВАННАЯ ПЕСОЧНИЦА]")
+        print("-> ИИ зациклился в абстрактных спорах. Переходим к эмпирическому тесту кода...")
+        
+        # Эмуляция выполнения кода в изолированном контейнере
+        # ИИ пытается физически выполнить код, ловит реальный Traceback ошибки внешней среды
+        real_error_traceback = "Traceback: RuntimeException: Infinite loop detected in execution thread at line 42."
+        
+        print(f"-> Тест в симуляции завершен. Выявлен скрытый физический баг: '{real_error_traceback}'")
+        return real_error_traceback
+
+    def execute_loop(self, user_prompt, mock_llm_call_fn):
+        print(f"🔱 ЗАПУСК ДИАЛЕКТИЧЕСКОЙ ПЕТЛИ ДЛЯ ЗАДАЧИ: '{user_prompt}'\n")
+        
+        creator_input = user_prompt
+        
+        for iteration in range(1, self.max_iterations + 1):
+            print(f"--- ИТЕРАЦИЯ №{iteration} ---")
+            
+            # Шаг 1: Работа Агента-Творца
+            creator_output = mock_llm_call_fn(agent="creator", prompt=creator_input, history=self.history_critic)
+            print(f"🛠 [Творец выдал решение, длина символов: {len(creator_output)}]")
+            
+            # Шаг 2: Работа Агента-Оппонента
+            critic_output = mock_llm_call_fn(agent="critic", prompt=creator_output, history=self.history_creator)
+            score = self.parse_validation_score(critic_output)
+            print(f"🛡 [Оппонент провел аудит]. Метрика Validation_Score: {score}")
+            
+            # Шаг 3: Проверка Детектора Зацикливания перед обновлением истории
+            is_loop, reason = self.check_loop_condition(creator_output, score)
+            if is_loop:
+                print(f"⚠ {reason}")
+                # Отправляем в Песочницу Рекурсии, получаем жесткий эмпирический факт ошибки
+                empirical_fact = self.run_recursion_sandbox(user_prompt, creator_output)
+                # Перезапускаем Творца, скармливая ему физический факт вместо абстрактной критики Оппонента
+                creator_input = f"КРИТИЧЕСКИЙ СБОЙ В СИМУЛЯЦИИ РЕКУРСИИ. Твой код упал с ошибкой: {empirical_fact}. Перепиши ядро алгоритма!"
+                continue
+            
+            # Обновляем логические логи системы
+            self.history_creator.append(creator_output)
+            self.history_critic.append(critic_output)
+            self.scores_history.append(score)
+            
+            # Шаг 4: Условие выхода из петли при успехе
+            if score >= 0.95:
+                print("\n✅ СИСТЕМА ДОСТИГЛА ГОМЕОСТАЗА (СКОР >= 0.95). ОТВЕТ ВЕРИФИЦИРОВАН.")
+                return creator_output
+                
+            # Если скор низкий, но зацикливания нет — отправляем критику Оппонента Творцу на исправление
+            creator_input = critic_output
+            
+        print("\n⚠ ДОСТИГНУТ ЛИМИТ ИТЕРАЦИЙ. Выдача наиболее стабильной версии.")
+        return self.history_creator[-1] if self.history_creator else "Ошибка генерации."
+
+# =====================================================================
+# ДЕМОНСТРАЦИОННАЯ СИМУЛЯЦИЯ РАБОТЫ ДЛЯ ПРОВЕРКИ
+# =====================================================================
+def mock_llm_api(agent, prompt, history):
+    """Имитация ответов LLM для демонстрации работы триггера зацикливания на 3-й итерации"""
+    if agent == "creator":
+        if "СБОЙ В СИМУЛЯЦИИ" in prompt:
+            return "[ВЕРСИЯ КВАНТОВОГО ИСПРАВЛЕНИЯ]: Код полностью переписан с учетом падения в Рекурсии. Память очищена."
+        if len(history) == 2: # Имитируем, что на 3-й итерации Творец начал повторяться
+            return "[ВЕРСИЯ 3]: Оптимизированный код класса. Логика идентична Версии 2. Ошибок нет."
+        return f"[ВЕРСИЯ {len(history)+1}]: Базовое архитектурное решение задачи."
+    elif agent == "critic":
+        if "Логика идентична Версии 2" in prompt:
+            return "[АНАЛИЗ]: Творец ушел в эхо-камеру и не исправляет скрытый баг.\n[VALIDATION_SCORE]: 0.88"
+        if "КВАНТОВОГО ИСПРАВЛЕНИЯ" in prompt:
+            return "[АНАЛИЗ]: Ошибки устранены.\n[VALIDATION_SCORE]: 0.98"
+        return "[АНАЛИЗ]: Нормальное решение, но есть риск утечки памяти.\n[VALIDATION_SCORE]: 0.90"
+
+# Запуск оркестратора
+orchestrator = DialecticalOrchestrator()
+final_res = orchestrator.execute_loop("Спроектировать отказоустойчивый кэш-сервер", mock_llm_api)
+print(f"\nФИНАЛЬНЫЙ РЕЗУЛЬТАТ КОНТУРА:\n{final_res}")
+
