@@ -33,7 +33,7 @@
 [VALIDATION_SCORE]: (Дробное число от 0.00 до 1.00)
 
 # =====================================================================
-            import os
+                import os
     import re
     import ast
     import hashlib
@@ -117,11 +117,14 @@
             except SyntaxError:
                 return False
 
-            forbidden_modules = {'os', 'subprocess', 'sys', 'shutil', 'pty', 'platform', 'socket', 'importlib'}
-            # Explicitly forbidden built-in functions when they are called
-            forbidden_builtins_on_call = {'exec', 'eval', 'compile'}
-            # Built-in functions that enable dynamic access (even if just referenced), including __import__ and type
-            forbidden_dynamic_access_builtins = {'getattr', 'setattr', 'delattr', '__import__', 'type'}
+            forbidden_modules = {'os', 'subprocess', 'sys', 'shutil', 'pty', 'platform', 'socket', 'importlib', 're'}
+            # Consolidated set of all forbidden built-in functions/names, whether called or merely referenced.
+            # This includes functions like 'exec', 'eval', 'compile' (dangerous if called),
+            # and 'getattr', 'setattr', 'delattr', '__import__', 'type', '__getattribute__' (dangerous even if referenced).
+            forbidden_builtins_and_dynamic_access = {
+                'exec', 'eval', 'compile',
+                'getattr', 'setattr', 'delattr', '__import__', 'type', '__getattribute__'
+            }
 
             for node in ast.walk(root):
                 if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -130,32 +133,43 @@
                         if alias.name in forbidden_modules or alias.name.split('.')[0] in forbidden_modules:
                             return False
                 elif isinstance(node, ast.Call):
-                    # Check if the function being called is a forbidden built-in name
+                    # Check for direct calls to forbidden built-ins (e.g., eval(), exec())
                     if isinstance(node.func, ast.Name):
-                        if node.func.id in forbidden_builtins_on_call:
+                        if node.func.id in forbidden_builtins_and_dynamic_access:
                             return False
                     # Check for calls like 'importlib.import_module'
                     elif isinstance(node.func, ast.Attribute):
                         if isinstance(node.func.value, ast.Name) and node.func.value.id == 'importlib' and node.func.attr == 'import_module':
                             return False
-                    # Check for calls via __builtins__ (e.g., __builtins__.exec())
+                    # Check for calls via __builtins__ attribute access (e.g., __builtins__.exec()) or dictionary access (e.g., __builtins__['exec']())
                     elif isinstance(node.func, ast.Attribute) and \
                          isinstance(node.func.value, ast.Name) and \
                          node.func.value.id == '__builtins__':
-                        if node.func.attr in forbidden_builtins_on_call:
+                        if node.func.attr in forbidden_builtins_and_dynamic_access:
                             return False
-                elif isinstance(node, ast.Name): # Check for direct references to dynamic access functions
-                    if node.ctx == ast.Load and node.id in forbidden_dynamic_access_builtins:
+                    elif isinstance(node.func, ast.Subscript) and \
+                         isinstance(node.func.value, ast.Name) and \
+                         node.func.value.id == '__builtins__':
+                        if isinstance(node.func.slice, (ast.Constant, ast.Str)): # ast.Constant for Python 3.8+, ast.Str for older
+                            if node.func.slice.value in forbidden_builtins_and_dynamic_access:
+                                return False
+
+                # Check for direct references (loading) to forbidden built-ins/dynamic access functions
+                # This covers `f = eval`, `x = getattr`, `y = __import__` etc.
+                elif isinstance(node, ast.Name):
+                    if node.ctx == ast.Load and node.id in forbidden_builtins_and_dynamic_access:
                         return False
-                # New checks for attribute/subscript access on '__builtins__'
+
+                # Checks for attribute/subscript access on '__builtins__' when not part of a call.
+                # E.g., `x = __builtins__.eval` or `y = __builtins__['exec']`
                 elif isinstance(node, ast.Attribute):
                     if isinstance(node.value, ast.Name) and node.value.id == '__builtins__':
-                        if node.attr in forbidden_builtins_on_call or node.attr in forbidden_dynamic_access_builtins:
+                        if node.attr in forbidden_builtins_and_dynamic_access:
                             return False
                 elif isinstance(node, ast.Subscript):
                     if isinstance(node.value, ast.Name) and node.value.id == '__builtins__':
                         if isinstance(node.slice, (ast.Constant, ast.Str)): # ast.Constant for Python 3.8+, ast.Str for older
-                            if node.slice.value in forbidden_builtins_on_call or node.slice.value in forbidden_dynamic_access_builtins:
+                            if node.slice.value in forbidden_builtins_and_dynamic_access:
                                 return False
             return True
 
