@@ -33,29 +33,29 @@
 [VALIDATION_SCORE]: (Дробное число от 0.00 до 1.00)
 
 # =====================================================================
-import os
-import re
-import ast
-import logging
-import numpy as np
-from typing import List, Optional
-from pydantic import BaseModel, Field, ValidationError
-from openai import OpenAI
+    import os
+    import re
+    import ast
+    import logging
+    import numpy as np
+    from typing import List, Optional
+    from pydantic import BaseModel, Field, ValidationError
+    from openai import OpenAI
 
 # Настройка логирования для аудита безопасности
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - %(message)s')
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - %(message)s')
 
-class CreatorResponseSchema(BaseModel):
+    class CreatorResponseSchema(BaseModel):
     version: int = Field(description="Порядковый номер версии решения")
     reflection: str = Field(description="Краткий анализ замечаний оппонента")
     solution_code: str = Field(description="Чистый программный код или логический фреймворк")
 
-class CriticResponseSchema(BaseModel):
+    class CriticResponseSchema(BaseModel):
     vulnerabilities: List[str] = Field(description="Список обнаруженных уязвимостей и багов")
     validation_score: float = Field(description="Жесткая оценка качества от 0.00 до 1.00", ge=0.0, le=1.0)
     feedback_for_creator: str = Field(description="Инструкции по исправлению для Творца")
 
-class IndustrialDialecticalOrchestrator:
+    class IndustrialDialecticalOrchestrator:
     def __init__(self, max_iterations=5, similarity_threshold=0.92):
         self.max_iterations = max_iterations
         self.similarity_threshold = similarity_threshold
@@ -223,9 +223,129 @@ class IndustrialDialecticalOrchestrator:
                 print(f"🛑 СИСТЕМНАЯ ИНЖЕНЕРНАЯ БЛОКИРОВКА: {fail_safe_error}")
                 return "Выполнение прервано из-за недоступности внешних ИИ-моделей."
 
-if __name__ == "__main__":
+    if __name__ == "__main__":
     orchestrator = IndustrialDialecticalOrchestrator()
     orchestrator.execute_loop("Спроектировать асинхронный кэш")
+    
+    ---
+   Код интерактивного CLI-интерфейса  
+   
+    import os
+    import sys
+    import time
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.prompt import Prompt, Confirm
+    from rich.progress import SpinnerColumn, Progress, TextColumn
+    from rich.syntax import Syntax
+    from rich.table import Table
+
+# Импортируем оркестратор из основного файла проекта
+# Предполагается, что код оркестратора находится в файле dialectical_orchestrator.py
+    try:
+        from dialectical_orchestrator import IndustrialDialecticalOrchestrator
+    except ImportError:
+    # Если запуск происходит в одном файле или модуль не найден, создаем заглушку для демонстрации CLI
+    # В реальном проекте замените этот блок на импорт вашего класса
+        class IndustrialDialecticalOrchestrator:
+           def __init__(self, max_iterations=5):
+            self.max_iterations = max_iterations
+        def execute_loop(self, user_prompt: str) -> str:
+            # Имитация работы для демонстрации интерфейса
+            time.sleep(2)
+            return "def async_cache():\n    print('Индустриальный кэш успешно развернут')"
+
+    console = Console()
+
+    def display_welcome_banner():
+    """Выводит стильный стартовый баннер системы."""
+    welcome_text = (
+        "[bold cyan]Dialectical Loop — Industrial CLI Interface[/bold cyan]\n"
+        "[dim]Автономная мультиагентная система генерации и AST-валидации кода[/dim]\n\n"
+        "[bold green]Режимы защиты:[/bold green] [white]AST-парсинг дерева, Blind Validation, Fail-Safe Эмбеддинги[/white]"
+    )
+    console.print(Panel(welcome_text, border_style="cyan", expand=False))
+
+    def get_multiline_input() -> str:
+    """Позволяет пользователю вводить многострочные задачи."""
+    console.print("\n[bold yellow]📝 Введите ваше техническое задание:[/bold yellow] [dim](Для завершения ввода нажмите Ctrl+D или Ctrl+Z на Windows)[/dim]")
+    try:
+        lines = sys.stdin.read().strip()
+        if not lines:
+            console.print("[bold red]❌ Ошибка: Описание задачи не может быть пустым![/bold red]")
+            return ""
+        return lines
+    except KeyboardInterrupt:
+        console.print("\n[bold yellow]Ввод отменен пользователем.[/bold yellow]")
+        return ""
+
+    def run_orchestration(user_prompt: str, max_iters: int):
+    """Запускает процесс оркестрации с анимацией загрузки."""
+    orchestrator = IndustrialDialecticalOrchestrator(max_iterations=max_iters)
+    
+    console.print("\n[bold green]🚀 Инициализация диалектического контура...[/bold green]")
+    
+    # Красивый спиннер во время генерации и спора агентов
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        transient=True,
+    ) as progress:
+        progress.add_task(description="[cyan]Агенты Творец и Оппонент ведут дебаты и проверяют код в AST...[/cyan]", total=None)
+        
+        # Запуск основного цикла оркестратора
+        final_result = orchestrator.execute_loop(user_prompt)
+    
+    return final_result
+
+    def display_results(result: str):
+    """Выводит финальный результат работы системы с подсветкой синтаксиса."""
+    console.print("\n" + "="*60)
+    
+    if "Контур остановлен системой безопасности" in result or "Выполнение прервано" in result:
+        console.print(Panel(f"[bold red]🚨 КРИТИЧЕСКИЙ ОСТАНОВ КОНТУРА[/bold red]\n\n{result}", border_style="red"))
+    else:
+        console.print("[bold green]✨ СИСТЕМА УСПЕШНО СГЕНЕРИРОВАЛА БЕЗОПАСНЫЙ КОД:[/bold green]\n")
+        
+        # Автоматическая подсветка синтаксиса Python в консоли
+        syntax = Syntax(result, "python", theme="monokai", line_numbers=True, word_wrap=True)
+        console.print(Panel(syntax, border_style="green", title="Фиинальный верифицированный код (Версия Enterprise)"))
+
+    def main():
+    display_welcome_banner()
+    
+    while True:
+        # 1. Настройка параметров итерации
+        try:
+            max_iters = int(Prompt.ask("\n[bold white]🔢 Введите лимит итераций дебатов (max_iterations)[/bold white]", default="5"))
+        except ValueError:
+            console.print("[bold red]Введите корректное число.[/bold red]")
+            continue
+            
+        # 2. Получение задачи от пользователя
+        user_prompt = get_multiline_input()
+        if not user_prompt:
+            continue
+            
+        # 3. Подтверждение и запуск
+        if Confirm.ask("\n[bold white]Запустить диалектический контур генерации?[/bold white]"):
+            final_code = run_orchestration(user_prompt, max_iters)
+            display_results(final_code)
+        
+        # 4. Запрос на повторный запуск
+        if not Confirm.ask("\n[bold white]Хотите ввести новую задачу?[/bold white]"):
+            console.print("\n[bold cyan]👋 Выход из системы. Безопасного деплоя![/bold cyan]")
+            break
+
+    if __name__ == "__main__":
+    # Проверка наличия переменной окружения для OpenAI перед запуском в реальном режиме
+    if "OPENAI_API_KEY" not in os.environ:
+        console.print("[yellow]⚠ Предупреждение: Переменная окружения OPENAI_API_KEY не найдена. Оркестратор будет запущен в тестовом Mock-режиме.[/yellow]")
+        
+    main()
+
+    
+
 
 
 
